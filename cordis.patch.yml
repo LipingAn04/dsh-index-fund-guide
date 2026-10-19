@@ -1,0 +1,10 @@
+# dsh bundle patch: 把本插件的 loader 条目插入 profile 层。
+# 顶层行会被当作「对已存在条目的覆盖」(entry not found)，所以必须用 insert 块。
+#
+# 本插件是纯 skill provider：apply() 调用 ctx.skills.register() 把自带的
+# skills/index-fund-guide/ 注册成运行时技能，因此不依赖 @deepseek-ai/dsh-skill-filesystem
+# 的目录扫描（该行在部分 deployment 里是 disabled 的）。
+
+- insert:
+    - id: dsh-index-fund-guide
+      name: 'dsh-index-fund-guide'

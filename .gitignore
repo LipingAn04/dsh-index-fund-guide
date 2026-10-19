@@ -1,0 +1,28 @@
+# 抓取缓存（每次 fetch 会重新生成）
+_ifg_cache/
+**/_ifg_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.tmp_selftest/
+.tmp_*/
+*.egg-info/
+
+# Node
+node_modules/
+pnpm-lock.yaml
+package-lock.json
+
+# 本地记录与导出（含个人持仓，不应入库）
+我的定投.csv
+*.local.csv
+*.log
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
