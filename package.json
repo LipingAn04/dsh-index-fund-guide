@@ -1,6 +1,6 @@
 {
   "name": "dsh-index-fund-guide",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "description": "《指数基金投资指南》(银行螺丝钉) 的估值—定投—卖出体系, 含 2026-10 利率校准、方法分派、组合分配、定投记录、回测，以及用原料自算 PE/PB 并逐只对账的取数脚本。",
   "type": "commonjs",
   "main": "index.js",
@@ -9,6 +9,7 @@
     "cordis.patch.yml",
     "skills",
     "README.md",
+    "INSTALL.md",
     "DISCLAIMER.md",
     "CHANGELOG.md",
     "LICENSE"
