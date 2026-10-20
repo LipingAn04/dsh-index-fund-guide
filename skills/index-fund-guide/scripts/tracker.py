@@ -447,7 +447,7 @@ def cmd_collect(a):
 
 # ---------------------------------------------------------------- 判断与推算
 
-def pick_method(mod, typ, pe, pb, pct, a):
+def pick_method(mod, typ, pe, pb, pct, a, pbp=None):
     """按用户声明的类型选方法；没声明就按 PE 粗判并提示。"""
     typ = (typ or "").lower()
     mp = {"value": "yield", "grow": "bog", "cycle": "pb", "skip": "skip"}
@@ -458,6 +458,10 @@ def pick_method(mod, typ, pe, pb, pct, a):
         if pe and pe > 25:
             method = "bog"
             note = "未声明类型且 PE>25，按成长指数用博格公式（建议在关注清单里写明 type）"
+            # 周期股盈利塌陷时 PE 会被动抬高，PB 分位才是真便宜信号
+            if pbp is not None and pbp < a.buy_pct:
+                note += "；但 PB 分位 %.1f%% < %.0f%% 也符合'周期股盈利塌陷'特征，" % (pbp, a.buy_pct)
+                note += "若属证券/银行/能源等周期行业，请把 type 写成 cycle（改用 PB 法）"
         else:
             note = "未声明类型，默认按价值指数用盈利收益率法（建议在关注清单里写明 type）"
     if method in ("bog", "pb") and pct is None:
@@ -508,16 +512,24 @@ def analyse_one(mod, it, row, a, anchors):
     pbp = ef(row.get("pb_pct"))
     div = ef(row.get("dividend"))
     roe = ef(row.get("roe"))
-    method, mnote = pick_method(mod, it.get("type"), pe, pb, pct, a)
+    method, mnote = pick_method(mod, it.get("type"), pe, pb, pct, a, pbp)
 
     hk = str(it["key"]).upper().startswith("HK") or str(it["key"]).upper() in ("HSI", "HSCEI", "HSTECH")
     disc = 0.9 if hk else 1.0
+    y_note = ""
 
     signal, action, reason = "unknown", "数据不足", ""
     cash_half = False
     y = None
     if pe and pe > 0:
-        y = 100.0 / pe * disc
+        if hk and getattr(a, "hk_exact", False) and div is not None:
+            # 精确口径：税只作用于分红，不给全部盈利打 9 折
+            y = 100.0 / pe - div * a.tax
+            y_note = "港股精确口径(1/PE − 股息率×税率%.0f%%)" % (a.tax * 100)
+        else:
+            y = 100.0 / pe * disc
+            if hk:
+                y_note = "港股粗口径(盈利收益率×0.9)"
 
     if method == "skip":
         signal, action, reason = "skip", "放弃", mnote or "长期亏损或数据不足，不参与判断"
@@ -533,6 +545,18 @@ def analyse_one(mod, it, row, a, anchors):
                            % (pct, a.sell_pct))
                 action = "分批投资（减半）"
                 cash_half = True
+            # 反向打架：盈利率说"不够便宜"，但分位已在历史低估区。
+            # 这是高 ROE、低分红行业的常态（消费/医药/白酒），盈利率天然偏低，
+            # 用盈利收益率法会让它们永远进不了买入区——不能只提示"持有"，要指出方法不适配
+            lows = [v for v in (pct, pbp) if v is not None]
+            low_pct = min(lows) if lows else None
+            if signal == "hold" and y is not None and y < buy and low_pct is not None and low_pct < a.buy_pct:
+                label = "PB" if (pbp is not None and pbp == low_pct) else "PE"
+                reason += ("；[方法警示] %s 历史分位仅 %.1f%%（<%.0f%%），但盈利率 %.2f%% 未达买入线 %.2f%%——"
+                           "这类高 ROE、低分红行业盈利多用于再投资，盈利率天然偏低，"
+                           "盈利收益率法对它结构性不适配（书里表 4.2 对'盈利高速增长'类指数给的是博格公式）。"
+                           "若要按分位判断，请把 type 改成 grow 改用博格公式，别在盈利率法里硬等 10%%。"
+                           % (label, low_pct, a.buy_pct, y, buy))
         fix = mod.method_hint("yield", pe) if pe else ""
         if fix:
             reason = (reason + "；" + fix) if reason else fix
@@ -556,20 +580,27 @@ def analyse_one(mod, it, row, a, anchors):
     sc = scenarios(div, pe, g, a.years, pe_buy, use_reversion=(method == "yield"))
 
     # 建议金额：买入区按"越低估投越多"，其余为 0
+    # 量纲必须与方法匹配：盈利率法用"当前盈利率/买入线"，分位法用"买入分位/当前分位"，
+    # 否则会拿 3% 的盈利率去比 10% 的买入线，把成长指数系统性算成只该投三成
     amount = 0.0
-    if signal == "buy" and a.base and y:
-        amount = a.base * (y / buy) ** (a.n if a.n is not None else 1.0)
-    elif signal == "buy" and a.base:
-        amount = a.base
+    n = a.n if a.n is not None else 1.0
+    if signal == "buy" and a.base:
+        if method == "yield" and y:
+            amount = a.base * (y / buy) ** n
+        elif method in ("bog", "pb"):
+            use_pct = pbp if (method == "pb" and pbp is not None) else pct
+            amount = a.base * (a.buy_pct / use_pct) ** n if use_pct else a.base
+        else:
+            amount = a.base
     if cash_half:
         amount *= 0.5
 
     return {
         "key": it["key"], "name": it["name"], "type": it.get("type"),
         "method": method, "pe": pe, "pb": pb, "pe_pct": pct, "pb_pct": pbp,
-        "dividend": div, "roe": roe, "earnings_yield": y,
+        "dividend": div, "roe": roe, "earnings_yield": y, "y_note": y_note,
         "close": ef(row.get("close")),
-        "signal": signal, "action": action, "reason": reason,
+        "signal": signal, "action": action, "reason": reason, "half": cash_half,
         "growth": g, "growth_note": gsrc, "scenarios": sc,
         "amount": round(amount, 2), "target": ef(it.get("target")) or 0.0,
         "note": mnote, "date": row.get("date"),
@@ -633,28 +664,30 @@ def cmd_analyze(a):
     # 组合层：目标仓位分配 + 单只上限（水位填充：封顶后的余量继续分给未封顶的）
     budget = a.budget
     alloc = []
+    left_note = ""
     if budget:
         cand = [r for r in results if r["signal"] == "buy" and r["amount"] > 0]
-        tot_tgt = sum((r["target"] or 0.0) for r in cand) or 0.0
-        weights = {}
-        for r in cand:
-            weights[r["key"]] = ((r["target"] or 0.0) / tot_tgt) if tot_tgt else (
-                1.0 / len(cand) if cand else 0.0)
         cap_each = budget * a.max_single
-        given = {k: 0.0 for k in weights}
+        # 每个品种的实际上限 = min(单只上限, 该品种本期建议金额)
+        # 建议金额里已经含了"越低估投越多"与"矛盾减半"，不能被目标权重二次覆盖
+        caps = {r["key"]: min(cap_each, r["amount"]) for r in cand}
+        want = {r["key"]: (r["target"] or 0.0) for r in cand}
+        if not sum(want.values()):
+            want = {r["key"]: 1.0 for r in cand}
+        given = {k: 0.0 for k in caps}
         for _ in range(50):
             rem = budget - sum(given.values())
             if rem <= 0.005:
                 break
-            act = [k for k in weights if given[k] < cap_each - 0.005]
+            act = [k for k in caps if given[k] < caps[k] - 0.005]
             if not act:
                 break
-            tot_w = sum(weights[k] for k in act) or 0.0
+            tot_w = sum(want[k] for k in act) or 0.0
             if tot_w <= 0:
                 break
             added = 0.0
             for k in act:
-                give = min(rem * weights[k] / tot_w, cap_each - given[k])
+                give = min(rem * want[k] / tot_w, caps[k] - given[k])
                 given[k] += give
                 added += give
             if added <= 0.005:
@@ -663,11 +696,25 @@ def cmd_analyze(a):
             amt = given.get(r["key"], 0.0)
             if amt <= 0.005:
                 continue
+            at_cap = abs(amt - caps[r["key"]]) < 0.01
+            tag = ""
+            if at_cap:
+                tag = ("触及本期建议金额" if caps[r["key"]] < cap_each - 0.005
+                       else "触及单只上限")
             alloc.append({"key": r["key"], "name": r["name"], "amount": round(amt, 2),
                           "share": round(amt / budget * 100, 1),
-                          "capped": abs(amt - cap_each) < 0.01})
+                          "capped": at_cap, "cap_tag": tag.strip(),
+                          "planned": round(r["amount"], 2)})
         used = sum(x["amount"] for x in alloc)
         if alloc and used < budget - 0.01:
+            by_amount = all(caps[k] < cap_each - 0.005 for k in caps)
+            if by_amount:
+                left_note = ("全部买入品种都已达到本期建议金额（合计 %.2f 元），"
+                             "余额按纪律留债基/货基或留到下次，不硬凑满预算" % used)
+            else:
+                left_note = ("余额受「单只上限 %.0f%%」与「本期建议金额」双重约束（已投 %.2f 元），"
+                             "不为了花完预算而超配；剩余留债基/货基或留到下次"
+                             % (a.max_single * 100, used))
             alloc.append({"key": "—", "name": "留作债基/货基",
                           "amount": round(budget - used, 2),
                           "share": round((budget - used) / budget * 100, 1), "capped": False})
@@ -682,8 +729,9 @@ def cmd_analyze(a):
                     "sell_pe": round(100.0 / sell, 2) if sell else None},
         "counts": {k: sum(1 for r in results if r["signal"] == k)
                    for k in ("buy", "hold", "sell", "skip", "missing", "unknown")},
-        "items": results, "allocation": alloc,
+        "items": results, "allocation": alloc, "allocation_note": left_note,
         "budget": budget, "years": a.years, "growth_assumption": a.growth,
+        "pe_source": "蛋卷 index_eva（中证加权口径、TTM 附近；非自算，如需自算用 rawdata.py）",
     }
     if a.json:
         print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -697,7 +745,7 @@ def cmd_analyze(a):
     if warn:
         print(warn)
     print("-" * 100)
-    print("%-8s %-10s %-5s %-7s %-7s %-7s %-8s %-6s %s"
+    print("%-8s %-10s %-5s %-7s %-9s %-7s %-8s %-6s %s"
           % ("代码", "名称", "方法", "PE", "分位%", "股息%", "盈利率%", "动作", "推算年化(不回归/回归/再跌30%)"))
     print("-" * 100)
     for r in results:
@@ -706,9 +754,15 @@ def cmd_analyze(a):
             continue
         sc = r.get("scenarios") or {}
         seg = "/".join(fmt(sc.get(k), 1) for k in ("flat", "to_buy", "down30"))
-        print("%-8s %-10s %-5s %-7s %-7s %-7s %-8s %-6s %s"
+        # 分位列必须显示"判断实际用的那个分位"：周期股走 PB 法时看的是 PB 分位，
+        # 显示 PE 分位会让读者拿错数字复核（实测证券公司 PE 分位 0.2% vs PB 分位 0.6%）。
+        if r.get("method") == "pb" and r.get("pb_pct") is not None:
+            show_pct = "%s(PB)" % fmt(r["pb_pct"], 1)
+        else:
+            show_pct = fmt(r.get("pe_pct"), 1)
+        print("%-8s %-10s %-5s %-7s %-9s %-7s %-8s %-6s %s"
               % (r["key"], r["name"], METHOD_LABEL.get(r["method"], r["method"]), fmt(r["pe"]),
-                 fmt(r["pe_pct"], 1), fmt(r["dividend"], 2),
+                 show_pct, fmt(r["dividend"], 2),
                  fmt(r["earnings_yield"], 2), r["action"], seg))
     print("-" * 100)
 
@@ -720,10 +774,14 @@ def cmd_analyze(a):
         print("")
 
     if budget:
-        print("本月/本期预算 %.0f 元，按买入信号与目标仓位分配：" % budget)
+        print("本期预算 %.0f 元（单只上限 %.0f%%；每只上限还受'本期建议金额'约束）："
+              % (budget, a.max_single * 100))
         for x in alloc:
             print("    %-10s %8.2f 元  (占 %.1f%%)%s"
-                  % (x["name"], x["amount"], x["share"], "  ← 触及单只上限" if x["capped"] else ""))
+                  % (x["name"], x["amount"], x["share"],
+                     ("  ← " + x.get("cap_tag", "")) if x.get("cap_tag") else ""))
+        if left_note:
+            print("    说明: %s" % left_note)
         print("")
 
     print("判断依据（逐条）：")
@@ -732,9 +790,16 @@ def cmd_analyze(a):
             continue
         print("  %s %s → %s" % (r["key"], r["action"], r.get("reason") or "—"))
         print("      盈利增长假设 %.2f%%（%s）" % (r.get("growth") or 0, r.get("growth_note") or ""))
+        if r.get("y_note"):
+            print("      盈利率口径: %s" % r["y_note"])
         if r.get("note"):
             print("      方法提示: %s" % r["note"])
     print("")
+    hk_items = [r for r in results if r.get("y_note", "").startswith("港股粗口径")]
+    if hk_items:
+        print("[提示] 港股品种现在用的是 9 折粗口径（对全部盈利打折）。精确口径只对分红扣税，")
+        print("      通常高 0.3~0.5 个百分点，可能正好跨过买入线——加 --hk-exact 对比一次再决定。")
+        print("")
     print("说明: 「推算年化」是条件推算——先固定估值与盈利增长假设再算结果，不是预测；")
     print("      三档 = 估值不变 / 估值回落到买入线 / 估值再跌 30%%，年限 %d 年。" % a.years)
     print("      卖出侧请看分位是否 >%.0f%%（盈利收益率法在低利率环境几乎不触发卖出）。" % a.sell_pct)
@@ -831,8 +896,11 @@ def cmd_report(a):
         for x in data["allocation"]:
             L.append("| %s | %.2f 元 | %.1f%% | %s |"
                      % (x["name"], x["amount"], x["share"],
-                        "触及单只上限" if x["capped"] else ""))
+                        x.get("cap_tag") or ""))
         L.append("")
+        if data.get("allocation_note"):
+            L.append("> %s" % data["allocation_note"])
+            L.append("")
 
     L.append("## 四、判断依据")
     L.append("")
@@ -843,6 +911,8 @@ def cmd_report(a):
         L.append("")
         L.append("- 盈利增长假设 %.2f%%（%s），年限 %d 年"
                  % (it.get("growth") or 0, it.get("growth_note") or "", data["years"]))
+        if it.get("y_note"):
+            L.append("- 盈利率口径：%s" % it["y_note"])
         if it.get("note"):
             L.append("- 方法提示：%s" % it["note"])
         h = hist.get(it["key"]) or []
@@ -854,9 +924,14 @@ def cmd_report(a):
     L.append("## 五、数据与方法声明")
     L.append("")
     L.append("- 数据源：蛋卷 `djapi/index_eva/detail`（估值/分位/股息/ROE）+ 腾讯行情（点位），抓取时间见快照 CSV。")
+    L.append("- PE 口径：%s。分位、股息率、ROE 同源于蛋卷；**不是**本轮用原料自算的结果，"
+             "要自算请用 `rawdata.py data calc --index <代码>` 交叉验证。" % data.get("pe_source", "见快照"))
     L.append("- 阈值：`valuation.py` 的 preset，与 skill 正文完全一致；低利率环境下卖出线可能长期不触发，卖出侧以分位 >%.0f%% 为主判据。" % a.sell_pct)
     L.append("- 「推算年化」是**条件推算**：固定估值与盈利增长后算结果，不是价格预测，也不是收益承诺。")
     L.append("- 分红税、换汇、港股通折价、赎回费均未计入本表。")
+    if any((it.get("y_note") or "").startswith("港股粗口径") for it in data["items"]):
+        L.append("- **港股用 9 折粗口径**（对全部盈利打折）。精确口径只对分红扣税，通常高 0.3~0.5pct，"
+                 "可能跨过买入线；用 `analyze --hk-exact` 复核。")
     L.append("")
     L.append("---")
     L.append("本报告由 `tracker.py` 自动生成，仅供研究，不构成投资建议。")
@@ -919,6 +994,9 @@ def build_parser():
         sp.add_argument("--n", type=float, default=1.0, help="定期不定额指数（默认 1）")
         sp.add_argument("--growth", type=float, default=None, help="盈利增长假设%%，默认 ROE×留存率")
         sp.add_argument("--years", type=float, default=3.0, help="推算年限（默认 3 年）")
+        sp.add_argument("--hk-exact", action="store_true",
+                        help="港股用精确口径（1/PE − 股息率×税率）而不是粗略打 9 折")
+        sp.add_argument("--tax", type=float, default=0.2, help="港股分红税率，默认 0.2")
 
     p = sub.add_parser("analyze", help="出信号 / 建议金额 / 三情景 / 提醒")
     common(p)

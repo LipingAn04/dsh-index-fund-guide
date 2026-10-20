@@ -518,6 +518,46 @@ def main(argv=None):
                    "留作债基/货基"],
                   label="跟踪: 出信号 + 跨线提醒 + 资金分配")
 
+        # 分配上限必须服从「本期建议金额」，不能被目标仓位二次覆盖
+        # 红利 PE 9 -> 盈利率 11.11%，建议金额 = 1000 × 11.11/10 = 1111.11（> 预算，全额给 1000 前先封顶）
+        # 创业板 分位 18 < 30 -> 博格法买入，建议金额 = 1000 × 30/18 = 1666.67
+        # 两只都超过预算 1000，各封 40% = 400 -> 余 200
+        if out and "400.00" not in out:
+            FAILS.append(("跟踪分配上限", "两只都应封在单只上限 400 元", out[:300], []))
+            print("[FAIL] 跟踪分配应受单只上限 400 约束")
+        else:
+            print("[ok]   跟踪分配: 单只上限 400 元生效, 余量留债基")
+
+        # 分位法建议金额必须用「买入分位/当前分位」，不能拿 3% 的盈利率比 10% 的买入线
+        jout2 = run("tracker.py", ["analyze", "--dir", tdir, "--preset", "cal",
+                                   "--base", "1000", "--json"],
+                    ['"amount"'], label="跟踪: 建议金额按方法分派")
+        if jout2:
+            try:
+                obj2 = _json.loads(jout2[jout2.index("{"):jout2.rindex("}") + 1])
+                growth = [x for x in obj2["items"] if x["method"] == "bog"][0]
+                if abs(growth["amount"] - 1000.0 * 30.0 / 18.0) > 1.0:
+                    FAILS.append(("跟踪分位法金额", "创业板应按 30/18 放大到约 1667",
+                                  str(growth["amount"]), []))
+                    print("[FAIL] 分位法建议金额用了错误的量纲")
+                else:
+                    print("[ok]   跟踪分位法金额: 30%%/18%% -> 约 1667 元（不是按盈利率算的 292）")
+            except Exception as e:
+                FAILS.append(("跟踪分位法金额", "JSON 解析失败", repr(e), []))
+                print("[FAIL] 跟踪分位法金额 JSON 解析失败: %r" % e)
+
+        # 港股精确口径必须能跨过买入线（粗 9 折 9.62% vs 精确 10.06%）
+        _wfx(fx2, "HKHSCEI", 9.35, 0.94, 40.0, 3.14, 10.05)
+        run("tracker.py", ["watch", "--dir", tdir, "--add", "HSCEI:恒生国企:value::0.2"],
+            ["type=value"], label="跟踪: 加入港股品种")
+        run("tracker.py", ["collect", "--dir", tdir, "--date", "2026-10-20",
+                           "--fixtures", fx2, "--no-close"],
+            ["[ok]"], forbid=["[失败]"], label="跟踪: 港股抓数（离线）")
+        hk1 = run("tracker.py", ["analyze", "--dir", tdir, "--preset", "cal"],
+                  ["港股粗口径", "坚定持有"], label="跟踪: 港股粗口径 9 折")
+        hk2 = run("tracker.py", ["analyze", "--dir", tdir, "--preset", "cal", "--hk-exact"],
+                  ["港股精确口径", "分批投资", "10.0"], label="跟踪: 港股精确口径跨过买入线")
+
         # 机器输出要能被程序吃下去（JSON 合法且计数自洽）
         jout = run("tracker.py", ["analyze", "--dir", tdir, "--preset", "cal",
                                   "--base", "1000", "--budget", "1000", "--json"],
