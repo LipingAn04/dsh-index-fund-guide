@@ -20,6 +20,10 @@ package-lock.json
 *.local.csv
 *.log
 
+# 每日跟踪的本地数据（关注清单/快照/日报，都含个人选择，不入库）
+fund-track/
+track-data/
+
 # 编辑器 / 系统
 .vscode/
 .idea/

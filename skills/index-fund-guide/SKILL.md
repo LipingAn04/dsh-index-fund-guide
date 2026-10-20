@@ -1,8 +1,8 @@
 ---
 name: index-fund-guide
-version: 2.6.3
+version: 2.7.0
 description: 用银行螺丝钉《指数基金投资指南》的估值—定投—卖出体系回答指数基金问题，并用当期真实利率数据校准书中 2017 年的买卖阈值。当用户问某只指数基金现在能不能买/该不该卖、怎么判断低估高估、怎么设计定投计划、定投年化收益率怎么算、每月定投多少钱、股票与债券货币基金怎么配比，或问"低估了还跌怎么办""涨了不敢下手"这类执行与心态问题时使用。
-whenToUse: 用户提到指数基金、宽基/行业指数、ETF、估值、市盈率/市净率/股息率、盈利收益率、定投、基金定投计划、指数基金什么时候卖、家庭资产配置比例、100减年龄，或问"这本书的规则现在还能用吗""阈值要不要调"时优先加载本技能。
+whenToUse: 用户提到指数基金、宽基/行业指数、ETF、估值、市盈率/市净率/股息率、盈利收益率、定投、基金定投计划、指数基金什么时候卖、家庭资产配置比例、100减年龄，或问"这本书的规则现在还能用吗""阈值要不要调"，或要做**每日跟踪**（"我关注的基金现在怎么样""今天该买什么""每天帮我盯一下""跟踪一下这几只"）时优先加载本技能。
 metadata:
   source_book: 指数基金投资指南 / 银行螺丝钉
   book_data_as_of: "2017-05"
@@ -213,6 +213,20 @@ metadata:
    <python> scripts/selftest.py
    ```
    `record` 写 CSV 后，`report` 直接给出成本、份额、**已实现盈亏 + 浮动盈亏 + 累计分红 + 累计费用**与**真实年化（XIRR）**——不用再手工把表格转成 IRR 参数。`--action` 取 `买 / 卖 / 分红`，卖出按**持仓均价**结转成本（不把已实现盈亏混进成本），分红按现金入账计入 XIRR。两个脚本都支持 `--json` 输出。所有子命令的完整参数见 `-h`。
+5. **每天跟踪** → 用户有多个关注品种、要"每天看一遍"时，用 `scripts/tracker.py` 把 1~4 步固化成一个循环（详见 `references/09-tracking.md`）：
+   ```text
+   # 一次性：建关注清单（默认 7 只宽基/红利/港股），类型决定用哪套估值法
+   <python> scripts/tracker.py init --dir ./fund-track
+   <python> scripts/tracker.py watch --dir ./fund-track --add "000922:中证红利:value:100032:0.3"
+
+   # 每天收盘后跑一次：抓快照（覆盖当天，不重复堆积）
+   <python> scripts/tracker.py collect --dir ./fund-track
+
+   # 判断 + 分配 + 日报
+   <python> scripts/tracker.py analyze --dir ./fund-track --budget 2000 --base 1000
+   <python> scripts/tracker.py report  --dir ./fund-track --budget 2000
+   ```
+   `analyze` 逐只给出**动作 + 原文理由 + 三档推算年化**（估值不变 / 回到买入线 / 再跌 30%），并只在与上次快照真有跨线时提醒（PE 变动 ≥3%、分位越过 30%/70%）。两条纪律必须转告用户：**推算年化是条件推算不是预测**；**没有变化的日子正确动作是什么都不做**。
 
 ## 卖出：巴菲特三条件
 
@@ -232,7 +246,7 @@ metadata:
 
 ## 脚本运行环境
 
-四个脚本（valuation / dingtou / rawdata / selftest）只用 Python 3 标准库（argparse/json/csv/datetime/urllib），无第三方依赖，Python 3.6+ 均可运行。只有 `rawdata.py` 需要联网（东财 + 腾讯行情），其余脚本离线可用。
+五个脚本（valuation / dingtou / rawdata / tracker / selftest）只用 Python 3 标准库（argparse/json/csv/datetime/urllib），无第三方依赖，Python 3.6+ 均可运行。需要联网的只有 `rawdata.py`（东财 + 腾讯行情）与 `tracker.py collect`（蛋卷 + 腾讯行情）；其余离线可用，`tracker.py analyze/report` 读本地快照也不联网。
 
 - `<python>` 替换为环境里的解释器：Windows 常用 `python`、`py` 或本机 runtime 的全路径；不确定时先调 `load_workspace_dependencies` 拿路径
 - 路径含中文/空格时加引号
@@ -252,6 +266,7 @@ metadata:
 | `references/06-qa.md` | 复利从哪来、低估为何还跌、看到上涨下不去手、定投双核制、迷你公司、买指数就是买国运 + **禁止清单（12 条硬约束）** |
 | `references/07-calibration.md` | **阈值校准全过程**：2026 数据快照、买卖线推导、三套口径的实测对比、三个矛盾案例（红利/创业板/恒生）、敏感性分析、重算触发条件 |
 | `references/08-raw-data.md` | **自己算 PE/PB**：书里的公式、四个原料的来源、TTM 相减法、三个层次的真实性证据（逐只对账 / 指数对账 / CSV 可抽查）、边界与失效情形 |
+| `references/09-tracking.md` | **每日跟踪**：关注清单与快照结构、四条命令、四道判断流程（方法分派/阈值/打架处理/金额）、三情景条件推算的公式与正确读法、日报五节、计划任务、已知边界 |
 
 ### 最小必读集（按问题类型，别一次读全部）
 
@@ -262,6 +277,7 @@ metadata:
 | 定投怎么开始、买多少、怎么记 | `03` + `04` + 跑 `surplus`/`plan`/`record` | 00 / 05 |
 | 股债货币怎么配、卖出后钱去哪 | `05` + `07` | 00 / 04 |
 | "低估还跌""涨了不敢买" | `06` | 01 / 02 |
+| 每天跟踪我关注的品种、今天该买什么 | `09` + 跑 `tracker init/collect/analyze/report` | 00 / 03 / 04 |
 
 ## 已知失效点与数据预案
 

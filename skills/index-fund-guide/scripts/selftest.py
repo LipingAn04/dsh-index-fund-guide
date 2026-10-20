@@ -467,6 +467,103 @@ def main(argv=None):
         ["yield", "bog", "pb", "深度已按各自方法的门槛归一"],
         label="组合: 候选可写类型, 混合方法时深度归一后分配")
 
+    # ---------- 15. 每日跟踪器 (全离线: 用 fixtures 造两天的数据) ----------
+    if not td:
+        print("[skip] 每日跟踪器 (找不到可写临时目录)")
+    else:
+        import json as _json
+        import shutil as _sh
+
+        tdir = os.path.join(td, "track")
+        fx1 = os.path.join(td, "fx1")
+        fx2 = os.path.join(td, "fx2")
+        for x in (tdir, fx1, fx2):
+            _sh.rmtree(x, ignore_errors=True)
+            os.makedirs(x, exist_ok=True)
+
+        def _wfx(where, code, pe, pb, pct, div, roe):
+            """写一份假的蛋卷 index_eva 响应（份额制：分位/股息/ROE 传百分数）。"""
+            with open(os.path.join(where, code + ".json"), "w", encoding="utf-8") as f:
+                _json.dump({"data": {
+                    "pe": pe, "pb": pb,
+                    "pe_percentile": pct / 100.0, "pb_percentile": pct / 100.0,
+                    "yeild": div / 100.0, "roe": roe / 100.0, "ts": 1792080000000,
+                }}, f)
+
+        # 第 1 天: 红利 PE 11（盈利率 9.09% -> 持有），分位 50
+        _wfx(fx1, "SH000922", 11.0, 1.00, 50.0, 3.0, 10.0)
+        _wfx(fx1, "SZ399006", 30.0, 4.00, 15.0, 1.0, 14.0)
+        # 第 2 天: 红利 PE 9（盈利率 11.11% -> 买入），分位 20（进入低估区）
+        _wfx(fx2, "SH000922", 9.0, 0.90, 20.0, 4.0, 10.0)
+        _wfx(fx2, "SZ399006", 32.0, 4.20, 18.0, 1.0, 14.0)
+
+        run("tracker.py", ["init", "--dir", tdir, "--force"], ["已初始化"],
+            label="跟踪: init 建清单")
+        run("tracker.py", ["watch", "--dir", tdir, "--remove", "000300,000016,000905,HSCEI,HSI"],
+            ["已移除"], label="跟踪: 移除不需要的品种")
+        run("tracker.py", ["watch", "--dir", tdir, "--add",
+                           "000922:中证红利:value:100032:0.5;399006:创业板指:grow::0.5"],
+            ["type=value", "type=grow"], label="跟踪: 写回类型与目标仓位")
+
+        run("tracker.py", ["collect", "--dir", tdir, "--date", "2026-10-19",
+                           "--fixtures", fx1, "--no-close"],
+            ["[ok]", "写入 2 条"], forbid=["[失败]"], label="跟踪: 第 1 天抓数（离线）")
+        run("tracker.py", ["collect", "--dir", tdir, "--date", "2026-10-20",
+                           "--fixtures", fx2, "--no-close"],
+            ["[ok]", "写入 2 条"], forbid=["[失败]"], label="跟踪: 第 2 天抓数（离线）")
+
+        out = run("tracker.py", ["analyze", "--dir", tdir, "--preset", "cal",
+                                 "--base", "1000", "--budget", "1000"],
+                  ["分批投资", "历史较低区域", "进入低估区", "PE 由 11.00 变为 9.00",
+                   "留作债基/货基"],
+                  label="跟踪: 出信号 + 跨线提醒 + 资金分配")
+
+        # 机器输出要能被程序吃下去（JSON 合法且计数自洽）
+        jout = run("tracker.py", ["analyze", "--dir", tdir, "--preset", "cal",
+                                  "--base", "1000", "--budget", "1000", "--json"],
+                   ['"counts"'], label="跟踪: --json 机器输出")
+        if jout:
+            try:
+                obj = _json.loads(jout[jout.index("{"):jout.rindex("}") + 1])
+                nbuy = obj["counts"]["buy"]
+                n_alloc = len(obj["allocation"])
+                if nbuy != 2 or n_alloc < 1:
+                    FAILS.append(("跟踪: JSON 自洽",
+                                  "预期买 2 只、有分配行，实际买 %s / 分配 %s 行"
+                                  % (nbuy, n_alloc), "", ("--json",)))
+                    print("[FAIL] 跟踪: JSON 自洽")
+                else:
+                    print("[ok]   跟踪: JSON 自洽 (买 %d 只 / 分配 %d 行)" % (nbuy, n_alloc))
+            except (ValueError, KeyError) as e:
+                FAILS.append(("跟踪: JSON 自洽", "解析失败: %s" % e, jout[:300], ("--json",)))
+                print("[FAIL] 跟踪: JSON 自洽")
+
+        rout = run("tracker.py", ["report", "--dir", tdir, "--preset", "cal",
+                                 "--budget", "1000", "--base", "1000"],
+                   ["日报已生成"], label="跟踪: 生成日报")
+        if rout:
+            import re as _re
+            m = _re.search(r"日报已生成:\s*(.+\.md)", rout)
+            if m and os.path.exists(m.group(1).strip()):
+                with open(m.group(1).strip(), "r", encoding="utf-8") as f:
+                    body = f.read()
+                need = ["## 一、今日信号", "## 五、数据与方法声明", "条件推算"]
+                if all(x in body for x in need):
+                    print("[ok]   跟踪: 日报落盘且含五个小节")
+                else:
+                    FAILS.append(("跟踪: 日报内容", "缺少段落 %s" % need, body[:300], ("report",)))
+                    print("[FAIL] 跟踪: 日报内容")
+            else:
+                FAILS.append(("跟踪: 日报内容", "报告文件没生成", rout[:300], ("report",)))
+                print("[FAIL] 跟踪: 日报内容")
+
+        run("tracker.py", ["show", "--dir", tdir], ["最近", "000922"],
+            label="跟踪: show 打印多日 PE")
+        run_err("tracker.py", ["collect", "--dir", os.path.join(td, "nope")],
+                ["还没有关注清单"], label="拒绝: 未初始化就跑 collect")
+        run_err("tracker.py", ["watch", "--dir", tdir, "--add", "000300:沪深300:乱写类型"],
+                ["类型只能是"], label="拒绝: 不认识的品种类型")
+
     # ---------- 汇总 ----------
     print("-" * 68)
     if FAILS:
