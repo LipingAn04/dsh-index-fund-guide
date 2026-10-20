@@ -371,6 +371,17 @@ def compute(payload):
     tot_np = sum(r["np_ttm"] for r in ok)
     tot_eq = sum(r["equity"] for r in ok if r["equity"])
     ff_pos = sum(r["float_mcap"] or 0 for r in ok)
+
+    # 自由流通加权 PE 的分母必须同样按自由流通比例加权。
+    # 错误做法(占位符版本): Σ自由流通市值 / Σ全部净利润 —— 大市值股票的自由流通占比小,
+    #   分母用了 100% 的利润, 分子只算 30% 的市值, PE 会被系统性压得极低(实测 5.93 vs 9.03)。
+    # 正确做法: PE = Σ(自由流通市值) / Σ(净利润 × 自由流通比例), 两者用同一套权重。
+    def _float_np(rws):
+        return sum((r["np_ttm"] or 0) * ((r["float_mcap"] or 0) / r["mcap"])
+                   for r in rws if r.get("mcap"))
+    ff_np_all = _float_np(allr)
+    ff_np_pos = _float_np(ok)
+
     pes = sorted(r["pe_ours"] for r in ok)
     median = pes[len(pes) // 2] if pes else None
     summary = {
@@ -384,11 +395,12 @@ def compute(payload):
         "pe_total": mcap_all / np_all if np_all > 0 else None,
         # 剔除亏损股口径：只把盈利公司加权
         "pe_pos": tot_mcap / tot_np if tot_np > 0 else None,
-        "pe_float": ff_all / np_all if np_all > 0 and ff_all else None,
-        "pe_float_pos": ff_pos / tot_np if tot_np > 0 and ff_pos else None,
+        "pe_float": ff_all / ff_np_all if ff_np_all > 0 and ff_all else None,
+        "pe_float_pos": ff_pos / ff_np_pos if ff_np_pos > 0 and ff_pos else None,
         "pe_median": median,
         "pb_total": tot_mcap / tot_eq if tot_eq else None,
         "sum_mcap": mcap_all, "sum_float": ff_all, "sum_np": np_all,
+        "sum_np_float": ff_np_all,
         "sum_np_pos": tot_np, "sum_equity": tot_eq,
     }
     return rows, summary
@@ -453,7 +465,7 @@ def cmd_calc(a):
     print("  PE(中证口径)     %8s   = Σ总市值 / Σ净利润（亏损股的负利润计入；共 %d 只亏损）"
           % (_fmt(s["pe_total"]), s["n_loss"]))
     print("  PE(剔除亏损)     %8s   = 只把盈利公司加权，通常比中证口径低" % _fmt(s["pe_pos"]))
-    print("  PE(自由流通加权) %8s   = Σ自由流通市值 / Σ净利润（权重偏小盘）" % _fmt(s["pe_float"]))
+    print("  PE(自由流通加权) %8s   = Σ自由流通市值 / Σ(净利润 x 自由流通比例)（权重偏小盘）" % _fmt(s["pe_float"]))
     print("  PE(个股中位数)   %8s   = 等权视角，不受巨头影响" % _fmt(s["pe_median"]))
     print("  PB(总市值加权)   %8s   = Σ总市值 / Σ净资产" % _fmt(s["pb_total"]))
     miss = [r for r in rows if r["np_ttm"] is None and r["mcap"]]

@@ -149,10 +149,13 @@ def main(argv=None):
         ["卖出"], label="PE 40 -> 2.5% -> 分批卖出")
 
     # 边界语义: 恰好等于买入线按保守方向处理(等于不算买入), 等于卖出线算持有
-    run("valuation.py", ["signal", "--pe", "10"], ["坚定持有", "恰好落在边界上"],
+    run("valuation.py", ["signal", "--pe", "10"], ["坚定持有", "恰好等于买入线"],
         forbid=["分批投资"], label="边界: 盈利收益率恰好 10.00% -> 持有(端点保守)")
-    run("valuation.py", ["signal", "--pe", "15.625"], ["坚定持有", "恰好落在边界上"],
+    run("valuation.py", ["signal", "--pe", "15.625"], ["坚定持有", "恰好等于卖出线"],
         forbid=["分批卖出"], label="边界: 盈利收益率恰好 6.40% -> 持有(端点保守)")
+    # 反向断言: 不在边界上就不许自称"恰好落在边界" (曾经每个持有信号都这么写)
+    run("valuation.py", ["signal", "--pe", "31.57", "--preset", "cal"], ["坚定持有"],
+        forbid=["恰好等于", "恰好落在边界"], label="普通持有信号不得自称处于边界")
 
     # ---------- 2. 博格公式 (书中沪深300 十年实例) ----------
     run("valuation.py", ["bog",
@@ -342,6 +345,46 @@ def main(argv=None):
         try:
             os.remove(os.path.join(raw_dir, "index-TEST.json"))
             os.rmdir(raw_dir)
+        except OSError:
+            pass
+
+    # ---------- 11c. 自由流通加权 PE: 分母必须同权重(否则大市值股会把 PE 压低) ----------
+    # 两只股票, 自由流通比例差别很大:
+    #   A: 总市值 100 亿, 自由流通 30 亿, 净利 10 亿  (比例 0.3)
+    #   B: 总市值 100 亿, 自由流通 100 亿, 净利  2 亿  (比例 1.0)
+    #   中证口径 PE = (100+100)/(10+2) = 16.67
+    #   自由流通 PE = 130 / (10x0.3 + 2x1.0) = 130/5 = 26.00   <-- 正确
+    #   错误算法(Σ自由流通/Σ净利) = 130/12 = 10.83             <-- 必须不出现
+    raw_dir2 = os.path.join(td, "rawcache2") if td else None
+    if raw_dir2 is None:
+        print("[skip] 自由流通加权: 找不到可写临时目录")
+    else:
+        import json as _json2
+        os.makedirs(raw_dir2, exist_ok=True)
+        payload2 = {
+            "index": "TESTFF", "fetched_at": "2026-10-19T00:00:00", "period": "2026-06-30",
+            "codes": ["C00003", "D00004"],
+            "quotes": {
+                "C00003": {"name": "丙公司", "price": 10.0, "mcap": 1.0e10,
+                           "float_mcap": 3.0e9, "pe_vendor": 10.0, "pb_vendor": 1.0},
+                "D00004": {"name": "丁公司", "price": 10.0, "mcap": 1.0e10,
+                           "float_mcap": 1.0e10, "pe_vendor": 50.0, "pb_vendor": 2.0},
+            },
+            "reports": {
+                "latest": {"C00003": {"np": 10.0e8, "bps": 5.0},
+                           "D00004": {"np": 2.0e8, "bps": 2.5}},
+                "prev_fy": {"C00003": {"np": 0.0}, "D00004": {"np": 0.0}},
+                "prev_same": {"C00003": {"np": 0.0}, "D00004": {"np": 0.0}},
+            },
+        }
+        with open(os.path.join(raw_dir2, "index-TESTFF.json"), "w", encoding="utf-8") as f:
+            _json2.dump(payload2, f, ensure_ascii=False)
+        run("rawdata.py", ["calc", "--index", "TESTFF", "--cache", raw_dir2, "--top", "0"],
+            ["26.00", "16.6"], forbid=("10.83",),
+            label="自由流通加权: 分母同权重 -> 26.00 (旧的 Σ自由流通/Σ净利 会得 10.83)")
+        try:
+            os.remove(os.path.join(raw_dir2, "index-TESTFF.json"))
+            os.rmdir(raw_dir2)
         except OSError:
             pass
 

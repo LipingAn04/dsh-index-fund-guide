@@ -266,9 +266,13 @@ def judge_yield(y, buy, sell):
     if y > buy:
         return "buy", "分批投资", "盈利收益率 %s%% > 买入线 %s%%, 处于低估区, 按月坚持定投" % (fmt(y), fmt(buy, 1))
     if y >= sell:
-        edge = " (恰好落在边界上, 按保守方向处理: 等于买入线不算买入)"
-        if abs(y - buy) < 1e-9 or abs(y - sell) < 1e-9:
-            edge = " (恰好落在边界上, 按保守方向处理: 等于买入线不算买入、等于卖出线不算卖出)"
+        edge = ""
+        # 只有真的压在边界上才提这件事。之前这里默认就带上了这句,
+        # 导致每一个"持有"信号都谎称"恰好落在边界上"。
+        if abs(y - buy) < 1e-9:
+            edge = " (恰好等于买入线, 按保守方向处理: 不算买入)"
+        elif abs(y - sell) < 1e-9:
+            edge = " (恰好等于卖出线, 按保守方向处理: 不算卖出)"
         return "hold", "坚定持有", "盈利收益率 %s%% 落在 %s%%~%s%% 的持有区, 停止新增定投, 已买份额继续持有%s" % (fmt(y), fmt(sell, 1), fmt(buy, 1), edge)
     return "sell", "分批卖出", "盈利收益率 %s%% < 卖出线 %s%%, 已不如债券基金; 份额分 10 份, 每月卖 1 份" % (fmt(y), fmt(sell, 1))
 
@@ -455,8 +459,10 @@ def cmd_signal(a):
         print("[!] 卖出线 %s%% 隐含 PE > %s 倍, 高于 A 股历史上绝大多数指数的高点。"
               % (fmt(sell, 1), fmt(100.0 / sell, 0)))
         print("    低利率把卖出线压到很低, 结果是本方法在当前环境几乎永远发不出'卖出'信号。")
-        print("    不要把它理解为'可以一直不卖': 卖出判断请用 --type grow --percentile <分位>,")
-        print("    或给 --sell-line 自定义。")
+        print("    不要把它理解为'可以一直不卖', 卖出必须换判据:")
+        print("      a) 补 --percentile <该品种 PE 历史分位>, 分位 >70% 视为高估;")
+        print("      b) 或给 --sell-line 自定义卖出线(如按你认可的股息率下限反推 PE);")
+        print("      c) 若是高速成长/强周期品种, 本来就不该用本方法, 改 --type grow / cycle。")
 
     if alt:
         print()
@@ -466,9 +472,18 @@ def cmd_signal(a):
             print("交叉验证(盈利收益率): %s%% -> %s"
                   % (fmt(alt["earnings_yield_pct"]), alt["action"]))
         if alt["signal"] != res["signal"]:
-            print("[!] 两种方法给出的信号不一致。这通常说明该品种被错了方法:")
-            print("    盈利收益率法适合盈利稳定的价值指数, 分位法适合成长/周期指数。")
-            print("    先确认它属于哪一类(见 references/02-catalog.md 的分类表), 再采信对应方法的结论。")
+            if method == "yield":
+                # 使用者已经按"价值指数"处理了, 这里不是选错方法, 而是绝对口径与相对口径打架。
+                print("[!] 两种判据不一致: 绝对盈利收益率说%s, 历史分位说%s。"
+                      % (res["action"], alt["action"]))
+                print("    这不是方法选错(你已按价值指数处理), 而是'绝对便宜'与'相对便宜'的分歧:")
+                print("    A 股指数历史短(十几年), 分位会被过去的高估值或低估值带偏(见 references/07-calibration.md 5.1)。")
+                print("    裁决建议: 以盈利收益率为主, 但因为分位偏高, 把仓位打折(例如只投基准金额的一半),")
+                print("    或改用更严的口径 --preset book / --preset cal-rp 复核, 别一次性重仓。")
+            else:
+                print("[!] 两种方法给出的信号不一致。这通常说明该品种被错了方法:")
+                print("    盈利收益率法适合盈利稳定的价值指数, 分位法适合成长/周期指数。")
+                print("    先确认它属于哪一类(见 references/02-catalog.md 的分类表), 再采信对应方法的结论。")
         else:
             print("两种方法结论一致, 信号较可靠。")
 
@@ -929,6 +944,18 @@ def cmd_portfolio(a):
     if skipped:
         note.append("按表 4.2 放弃: %s" % ", ".join(c["code"] for c in skipped))
 
+    # 被排除的候选必须点名, 不能让它从结果里无声消失
+    # (只给两只候选却出现 100% 分配, 很容易被误读成"另一只也买了")
+    excluded = [c for c in cands if c["signal"] not in ("buy", "skip")]
+    for c in excluded:
+        note.append("未分配 %s: %s —— %s" % (c["code"], c["action"], c["reason"]))
+
+    # 候选也可能被分错方法(把创业板当价值指数), 这里逐个复核
+    for c in cands:
+        h = method_hint(c["method"], c["value"] if c["method"] in ("yield", "bog") else None)
+        if h:
+            note.append("%s: %s" % (c["code"], h[4:] if h.startswith("[!] ") else h))
+
     groups = []
     if a.group:
         for g in a.group:
@@ -1055,6 +1082,9 @@ def cmd_portfolio(a):
                  fmt(x["earnings_yield_pct"]) if x["earnings_yield_pct"] is not None else "-",
                  fmt(x["weight_pct"]), fmt(x["amount"])))
     print("-" * 62)
+    if excluded:
+        print("未分配         : %s"
+              % ", ".join("%s(%s)" % (c["code"], c["action"]) for c in excluded))
     for n in note:
         print("[!] %s" % n)
     if groups:
