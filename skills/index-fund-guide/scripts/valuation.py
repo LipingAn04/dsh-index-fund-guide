@@ -322,13 +322,20 @@ def judge_method(method, pe=None, pb=None, percentile=None, discount=1.0,
 
 
 def method_hint(method, pe):
-    """方法可能配错的提醒。"""
+    """方法可能配错的提醒。
+
+    注意：下面 PE>25 / PE<12 两个门槛是**本工具的经验启发式**，不是书里的规则
+    （书里只给四类指数的定性判据，没给"PE 多少算成长"的数字）。所以它只用于提醒复核，
+    绝不自动改方法——自动改等于用我编的数字悄悄替换用户的判断。
+    """
     if method == "yield" and pe is not None and pe > 25:
         return ("[!] PE %s 偏高。若该指数是高速成长(创业板/中证500/纳指)或强周期(证券/能源/钢铁),"
                 " 盈利收益率法本就不适用(书里表 4.2), 请改用 --type grow 或 --type cycle"
-                " 并给 --percentile。" % fmt(pe, 2))
+                " 并给 --percentile。（PE>25 这条门槛是本工具的经验值, 不是书里的规则）"
+                % fmt(pe, 2))
     if method in ("bog", "pb") and pe is not None and pe < 12:
         return ("[!] PE %s 很低, 该品种更像'盈利稳定的价值指数', 用 --type value 更合适。"
+                "（PE<12 这条门槛是本工具的经验值, 不是书里的规则）"
                 % fmt(pe, 2))
     return None
 

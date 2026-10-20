@@ -499,6 +499,10 @@ def main(argv=None):
 
         run("tracker.py", ["init", "--dir", tdir, "--force"], ["已初始化"],
             label="跟踪: init 建清单")
+        # type 的来历必须显式交代：它来自书第3章的描述性分类，不是当期数据结论
+        run("tracker.py", ["init", "--dir", tdir + "-type", "--force"],
+            ["类型自查", "描述性分类", "不是当期数据"],
+            label="跟踪: init 交代 type 的来历（第3章描述 ≠ 当期结论）")
         run("tracker.py", ["watch", "--dir", tdir, "--remove", "000300,000016,000905,HSCEI,HSI"],
             ["已移除"], label="跟踪: 移除不需要的品种")
         run("tracker.py", ["watch", "--dir", tdir, "--add",
@@ -515,8 +519,21 @@ def main(argv=None):
         out = run("tracker.py", ["analyze", "--dir", tdir, "--preset", "cal",
                                  "--base", "1000", "--budget", "1000"],
                   ["分批投资", "历史较低区域", "进入低估区", "PE 由 11.00 变为 9.00",
-                   "留作债基/货基"],
-                  label="跟踪: 出信号 + 跨线提醒 + 资金分配")
+                   "留作债基/货基", "判据分层", "数据日 2026-10-20"],
+                  label="跟踪: 出信号 + 跨线提醒 + 资金分配 + 判据分层交代")
+
+        # 用旧快照出信号必须被点名：拿几年前的 PE 当今天的价格做决定，是这个工具最危险的用法。
+        # 单独开一个只装了旧快照的目录（否则 max(数据日) 仍是今天，永远不触发）。
+        stale = tdir + "-stale"
+        run("tracker.py", ["init", "--dir", stale, "--force"], ["已初始化"],
+            label="跟踪: 建旧数据目录")
+        run("tracker.py", ["watch", "--dir", stale, "--remove", "000300,000016,000905,399006,HSCEI,HSI"],
+            ["已移除"], label="跟踪: 旧数据目录只留一只")
+        run("tracker.py", ["collect", "--dir", stale, "--date", "2020-01-02",
+                           "--fixtures", fx2, "--no-close"],
+            ["[ok]"], label="跟踪: 抓一份 2020 年的旧快照")
+        run("tracker.py", ["analyze", "--dir", stale, "--preset", "cal", "--max-age", "3"],
+            ["数据不是今天的", "再判断"], label="跟踪: 旧数据必须报警（--max-age）")
 
         # 分配上限必须服从「本期建议金额」，不能被目标仓位二次覆盖
         # 红利 PE 9 -> 盈利率 11.11%，建议金额 = 1000 × 11.11/10 = 1111.11（> 预算，全额给 1000 前先封顶）

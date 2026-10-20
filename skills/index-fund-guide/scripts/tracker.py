@@ -53,16 +53,30 @@ SNAP_HEADER = ["date", "key", "name", "kind", "type", "close", "pe", "pb",
                "pe_pct", "pb_pct", "dividend", "roe", "source", "fetched_at"]
 WATCH_HEADER_KEYS = ("key", "name", "type", "fund", "target", "note")
 
-# 默认关注清单：四类指数各取代表，覆盖"价值 / 成长 / 周期 / 港股"
+# 默认关注清单：四类指数各取代表。
+# 注意 type 的来历：它来自《指数基金投资指南》**第 3 章对各指数的描述性分类**，
+# 不是当期数据算出来的结论。type 决定用第 4 章哪套方法，因此用错 type 会让结论反向
+# （创业板按 value 判"卖出"，按 grow 判"分位低估可投"）。init 时会逐只提示确认。
 DEFAULT_WATCH = [
-    {"key": "000300", "name": "沪深300",   "type": "value", "fund": "", "target": 0.30, "note": "A股核心宽基"},
-    {"key": "000016", "name": "上证50",    "type": "value", "fund": "", "target": 0.20, "note": "大盘蓝筹"},
-    {"key": "000922", "name": "中证红利",  "type": "value", "fund": "", "target": 0.20, "note": "高股息，熊市抗跌"},
-    {"key": "000905", "name": "中证500",   "type": "grow",  "fund": "", "target": 0.10, "note": "中盘成长"},
-    {"key": "399006", "name": "创业板指",  "type": "grow",  "fund": "", "target": 0.05, "note": "高波动，只宜小仓"},
-    {"key": "HSCEI",  "name": "恒生国企",  "type": "value", "fund": "", "target": 0.10, "note": "港股，估值折价"},
-    {"key": "HSI",    "name": "恒生指数",  "type": "value", "fund": "", "target": 0.05, "note": "港股宽基"},
+    {"key": "000300", "name": "沪深300",   "type": "value", "fund": "", "target": 0.30, "note": "宽基·大盘"},
+    {"key": "000016", "name": "上证50",    "type": "value", "fund": "", "target": 0.20, "note": "宽基·大盘蓝筹"},
+    {"key": "000922", "name": "中证红利",  "type": "value", "fund": "", "target": 0.20, "note": "宽基·红利"},
+    {"key": "000905", "name": "中证500",   "type": "grow",  "fund": "", "target": 0.10, "note": "宽基·中盘"},
+    {"key": "399006", "name": "创业板指",  "type": "grow",  "fund": "", "target": 0.05, "note": "宽基·创业板"},
+    {"key": "HSCEI",  "name": "恒生国企",  "type": "value", "fund": "", "target": 0.10, "note": "港股·H股"},
+    {"key": "HSI",    "name": "恒生指数",  "type": "value", "fund": "", "target": 0.05, "note": "港股·宽基"},
 ]
+
+# type -> 分类依据（只在 init 的自查提示里用，帮助用户判断要不要改）
+TYPE_WHY = {
+    "000300": "书里未列入盈利收益率法名单，但被视为盈利最稳定、最具代表性的宽基",
+    "000016": "书里点名适合盈利收益率法",
+    "000922": "书里点名适合盈利收益率法",
+    "000905": "书里描述为中盘、盈利增长快但波动大 → 按成长处理",
+    "399006": "书里描述为小公司、盈利未稳定、易暴涨暴跌 → 按成长处理",
+    "HSCEI":  "书里点名适合盈利收益率法（港股，需 9 折或精确口径）",
+    "HSI":    "书里点名适合盈利收益率法（港股，需 9 折或精确口径）",
+}
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -101,6 +115,14 @@ def fmt(v, nd=2, dash="—"):
 
 def today_str():
     return datetime.date.today().isoformat()
+
+
+def _wd(date_str):
+    """日期字符串 -> weekday（0=周一）。解析失败返回 7（当作周末，不触发交易日提醒）。"""
+    try:
+        return datetime.date(*[int(x) for x in date_str.split("-")]).weekday()
+    except Exception:
+        return 7
 
 
 def dj_code(key, kind="index"):
@@ -320,6 +342,13 @@ def cmd_init(a):
         print("  %-8s %-10s type=%-5s target=%3d%%  %s"
               % (it["key"], it["name"], it["type"], round(it["target"] * 100), it["note"]))
     print("")
+    print("类型自查（type 决定用第 4 章哪套方法，用错会让结论反向）：")
+    for it in obj["items"]:
+        why = TYPE_WHY.get(it["key"], "按书第3章的描述归类")
+        print("  %-8s %-10s type=%-5s ← %s" % (it["key"], it["name"], it["type"], why))
+    print("  ↑ 这些都是书第 3 章对指数的**描述性分类**，不是当期数据算出来的结论。")
+    print("    改法: python tracker.py watch --dir %s --add \"399006:创业板指:grow\"" % a.dir)
+    print("")
     print("下一步: python tracker.py collect --dir %s" % a.dir)
     return 0
 
@@ -441,6 +470,14 @@ def cmd_collect(a):
         print("[!] %d 只抓取失败。多半是接口改名或限流；15 分钟后重试，或用 --fixtures 离线。" % fail)
         for it, msg in failures:
             print("    %-8s %s" % (it["key"], msg))
+
+    # 盘中提醒：日期只记到"天"，但交易时段抓到的估值和价格不是收盘值。
+    # 用本地时间判断，不猜时区：交易日 15:00 前抓 = 盘中，15:00 后抓 = 收盘附近。
+    now = datetime.datetime.now()
+    if not a.fixtures and now.weekday() < 5 and date == today_str() and now.hour * 60 + now.minute < 15 * 60:
+        print("[!] 现在是交易日 %s（15:00 前），抓到的是**盘中值**不是收盘值。" % now.strftime("%H:%M"))
+        print("    收盘后（15:00 之后）再跑一次 collect，会覆盖同一天的数据，那才是收盘口径。")
+
     print("下一步: python tracker.py analyze --dir %s" % a.dir)
     return 0 if ok else 1
 
@@ -542,6 +579,8 @@ def analyse_one(mod, it, row, a, anchors):
             if pct is not None and signal == "buy" and pct > a.sell_pct:
                 reason += ("；但 PE 分位 %.1f%% 已在历史高位（>%.0f%%），与盈利收益率矛盾："
                            "盈利稳定则以盈利率为准，但仓位减半、分批入手"
+                           "（这里的'盈利稳定'是书第3章对该指数的描述性判断，"
+                           "不是当期数据算出来的，别当成数据的结论）"
                            % (pct, a.sell_pct))
                 action = "分批投资（减半）"
                 cash_half = True
@@ -738,7 +777,28 @@ def cmd_analyze(a):
         return 0
 
     # ---- 人类可读
-    print("每日跟踪分析   数据日 %s   口径 preset=%s" % (last_date, a.preset))
+    # 数据新鲜度：快照是"某一天的"数据，不是"永远有效"的数据。
+    # 不提醒的话，用户会拿三周前的 PE 当今天的价格做决定。
+    try:
+        age = (datetime.date.today() - datetime.date(*[int(x) for x in last_date.split("-")])).days
+    except Exception:
+        age = None
+    print("每日跟踪分析   数据日 %s%s   口径 preset=%s"
+          % (last_date, "" if age is None else ("（今天）" if age == 0 else "（%d 天前）" % age),
+             a.preset))
+    if age is not None and age > max(getattr(a, "max_age", 3), 0):
+        print("[!] 数据不是今天的：这份快照比今天旧 %d 天。先跑 collect（默认就取本地当天）"
+              "再判断；拿旧数据出信号，等于用上周的价格做今天的决定。" % age)
+    print("判据分层: 分类=书第3章对指数的描述(或用户指定) → 方法=书第4章四类四法"
+          " → 阈值=当期校准 → 数据=本地当天抓取")
+    # 盘中快照：数据日是"今天"但抓取时间在 15:00 前，估值与价格都不是收盘值。
+    # 这一条不改变信号，但会影响"今天到底该不该下手"，必须让人看见。
+    _ft = sorted({(r.get("fetched_at") or "")[11:16] for r in rows if r.get("date") == last_date})
+    _ft = [x for x in _ft if x]
+    if _ft and age == 0 and min(_ft) < "15:00" and _wd(last_date) < 5:
+        print("[!] 这份快照是盘中抓的（%s 首次抓取时间 %s，15:00 前）。"
+              % (last_date, min(_ft)))
+        print("    盘中价不是收盘价，估值会随后半天走势变化；要按收盘口径决策，请 15:00 后重跑 collect。")
     print("阈值: 买入线 %.2f%%（PE<%.1f）  卖出线 %.2f%%（PE>%.1f）"
           % (buy, 100.0 / buy if buy else 0, sell, 100.0 / sell if sell else 0))
     warn = mod.stale_warning(preset.get("as_of"), "阈值")
@@ -1003,6 +1063,8 @@ def build_parser():
     add_judge_args(p)
     p.add_argument("--budget", type=float, default=0.0, help="本期预算，按目标仓位分配")
     p.add_argument("--max-single", type=float, default=0.4, help="单只上限占预算比例，默认 0.4")
+    p.add_argument("--max-age", type=int, default=3,
+                   help="数据日距今超过几天就提醒（默认 3 天；0 = 只在不是今天时提醒）")
     p.add_argument("--json", action="store_true", help="机器可读输出")
     p.set_defaults(func=cmd_analyze)
 
