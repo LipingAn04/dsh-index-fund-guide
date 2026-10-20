@@ -385,6 +385,45 @@ def main(argv=None):
     except ImportError as e:
         print("[skip] 报告期推断 (导入 rawdata 失败: %s)" % e)
 
+    # ---------- 14. 按品种类型自动换算法 (--type -> --method) ----------
+    # 书里表 4.2: 四类指数四种方法。这一步错了, 后面每个减法都精确地错。
+    run("valuation.py", ["signal", "--type", "grow", "--pe", "31.62",
+                         "--percentile", "17.4", "--preset", "cal"],
+        ["高速成长指数", "历史较低区域", "--type grow → bog"],
+        forbid=["分类自查"], label="类型分派: --type grow -> 博格公式看分位")
+
+    run("valuation.py", ["signal", "--type", "cycle", "--pb", "1.2",
+                         "--percentile", "2", "--preset", "cal"],
+        ["强周期指数", "历史较低区域", "--type cycle → pb"],
+        label="类型分派: --type cycle -> 博格公式变种看 PB 分位")
+
+    run("valuation.py", ["signal", "--type", "distress", "--pe", "20"],
+        ["困境指数", "放弃", "--type distress → skip"],
+        label="类型分派: --type distress -> 直接放弃")
+
+    run("valuation.py", ["signal", "--type", "成长", "--pe", "31.62",
+                         "--percentile", "17.4", "--preset", "cal"],
+        ["高速成长指数"], label="类型分派: 中文别名 --type 成长 也认")
+
+    # 不指定类型时必须先让使用者过一遍分类自查, 不能默默套默认方法
+    run("valuation.py", ["signal", "--pe", "31.62", "--percentile", "17.4",
+                         "--preset", "cal"],
+        ["分类自查", "2) 高速成长", "3) 强周期", "4) 长期亏损"],
+        label="默认路径: 没给 --type 时打印分类自查四问")
+
+    run_err("valuation.py", ["signal", "--type", "value", "--method", "bog",
+                             "--pe", "31", "--percentile", "10"],
+            ["冲突"], label="拒绝: --type 与 --method 自相矛盾")
+    run_err("valuation.py", ["signal", "--type", "乱七八糟", "--pe", "10"],
+            ["未知的 --type"], label="拒绝: 不认识的类型")
+
+    # 组合层: 候选用类型写法, 且混合方法时深度必须归一(否则分位法压过盈利率法)
+    run("valuation.py", ["portfolio", "--budget", "3000", "--preset", "cal",
+                         "--candidates",
+                         "000922:9.12:1:value:30,399006:31.62:1:grow:17.4,399975:1.20:1:cycle:2.0"],
+        ["yield", "bog", "pb", "深度已按各自方法的门槛归一"],
+        label="组合: 候选可写类型, 混合方法时深度归一后分配")
+
     # ---------- 汇总 ----------
     print("-" * 68)
     if FAILS:

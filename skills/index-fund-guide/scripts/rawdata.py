@@ -543,7 +543,7 @@ def cmd_calc(a):
     if s.get("pe_total"):
         print()
         print("下一步（把算出来的数直接喂给买卖信号）：")
-        print("  valuation.py signal --pe %.4f --pe-type ttm --method yield"
+        print("  valuation.py signal --pe %.4f --pe-type ttm --type value"
               % s["pe_total"])
         print("  （真要下判断，再补 --percentile 用分位交叉验证；PE 只是其中一把尺子）")
     return 0

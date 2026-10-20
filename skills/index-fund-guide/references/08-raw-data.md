@@ -144,13 +144,13 @@ code,name,price,mcap_yi,float_mcap_yi,np_ttm_yi,bps,equity_yi,pe_ours,pb_ours,pe
 `calc` 最后会直接打印下一步该敲的命令：
 
 ```
-valuation.py signal --pe 13.0677 --pe-type ttm --method yield
+valuation.py signal --pe 13.0677 --pe-type ttm --type value
 ```
 
 注意三点：
 
 1. **必须带 `--pe-type ttm`**。自己算的是 TTM，标成静态会误导后来的读者。
-2. **PE 只是一把尺子**。盈利稳定的宽基用 `--method yield`；成长指数（创业板）要 `--method bog` 且必须给 `--percentile`；强周期（证券、能源）用 `--method pb`。方法选错，结论会从"买"翻到"卖"（见 `07-calibration.md` 5.2 节）。
+2. **PE 只是一把尺子，先分类再量**。盈利稳定的宽基 `--type value`；成长指数（创业板）`--type grow` 且必须再给 `--percentile`；强周期（证券、能源）`--type cycle` 配 `--pb`。方法选错，结论会从"买"翻到"卖"（见 `07-calibration.md` 5.2 节）。
 3. **算出来的数要写进记录**。`dingtou.py record --valuation <你算的 PE> --valuation-type ttm`，以后回看才知道当时的判断依据是什么口径。
 
 ---

@@ -40,7 +40,7 @@ pnpm add file:C:\path\to\dsh-index-fund-guide
 `skills/index-fund-guide/scripts/` 下 4 个 Python 文件**零第三方依赖**（仅标准库），Python 3.6+ 直接跑：
 
 ```bash
-python valuation.py signal --method yield --pe 9.01 --pe-type ttm --preset cal
+python valuation.py signal --type value --pe 9.01 --pe-type ttm --preset cal
 python dingtou.py irr --invest 1000,1000,1000,6000 --final 8600
 ```
 

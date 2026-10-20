@@ -31,7 +31,7 @@
 
 示例:
   python valuation.py signal --pe 9.01 --pe-type ttm
-  python valuation.py signal --method bog --pe 31.90 --pe-type ttm --percentile 18.2
+  python valuation.py signal --type grow --pe 31.90 --pe-type ttm --percentile 18.2
   python valuation.py signal --pe 10.70 --pe-type ttm --payout 0.5 --tax 0.2
   python valuation.py calibrate --riskfree 1.65 --bond-avg 3.0
   python valuation.py bog --dividend 1.86 --pe-now 19.71 --pe-future 13.17 --years 10 --earnings-growth 14.4
@@ -96,6 +96,69 @@ METHOD_LABEL = {
     "pb": "博格公式变种(周期指数, 看 PB 分位)",
     "skip": "放弃(长期亏损的困境指数)",
 }
+
+# 书里表 4.2: 四类指数 → 四种方法。--type 是给使用者的入口, --method 是底层覆盖。
+TYPE_METHOD = {
+    "value": "yield",
+    "grow": "bog",
+    "cycle": "pb",
+    "distress": "skip",
+}
+TYPE_LABEL = {
+    "value": "盈利稳定的价值指数(银行/白酒/红利/上证50 类)",
+    "grow": "高速成长指数(创业板/中证500/纳指 类)",
+    "cycle": "强周期指数(证券/能源/钢铁/航运 类)",
+    "distress": "长期亏损的困境指数",
+}
+# 中英文别名 -> 规范类型
+TYPE_ALIASES = {
+    "value": "value", "价值": "value", "稳定": "value", "盈利稳定": "value",
+    "grow": "grow", "成长": "grow", "高速成长": "grow", "增长": "grow",
+    "cycle": "cycle", "周期": "cycle", "强周期": "cycle",
+    "distress": "distress", "困境": "distress", "亏损": "distress",
+}
+
+
+def normalize_type(token):
+    """把 --type 的输入归一到 value/grow/cycle/distress; 不认识就返回 None。"""
+    if token is None:
+        return None
+    t = str(token).strip()
+    return TYPE_ALIASES.get(t) or TYPE_ALIASES.get(t.lower())
+
+
+def resolve_method(a):
+    """把 --type / --method 归成一个方法。
+
+    返回 (method, explicit, note):
+      explicit=True 表示使用者明确指定过类型或方法;
+      explicit=False 表示落到了默认值, 调用方应当打印分类自查提示。
+    """
+    tkey = normalize_type(getattr(a, "type", None))
+    raw_type = getattr(a, "type", None)
+    if raw_type is not None and tkey is None:
+        raise SystemExit("未知的 --type: %s（可用: value/价值, grow/成长, cycle/周期, "
+                         "distress/困境）" % raw_type)
+    m = getattr(a, "method", None)
+    if tkey is not None:
+        mapped = TYPE_METHOD[tkey]
+        if m is not None and m != mapped:
+            raise SystemExit("--type %s 对应 --method %s, 但你又显式给了 --method %s。"
+                             "两者冲突, 请只保留一个。" % (tkey, mapped, m))
+        return mapped, True, "--type %s → %s" % (tkey, mapped)
+    if m is not None:
+        return m, True, None
+    return "yield", False, None
+
+
+TYPE_CHECK_HINT = (
+    "[!] 没有指定 --type, 按默认「价值指数 → 盈利收益率法」处理。先过一遍分类自查:\n"
+    "    1) 长期盈利稳定、常年分红(银行/白酒/红利/上证50)  -> 就是默认, 保持\n"
+    "    2) 高速成长但盈利波动大(创业板/中证500/纳指)      -> 加 --type grow\n"
+    "    3) 强周期, 盈利大起大落(证券/能源/钢铁/航运)      -> 加 --type cycle\n"
+    "    4) 长期亏损、看不到翻身(困境行业)                 -> 加 --type distress(直接放弃)\n"
+    "    分派依据: 书里表 4.2 / references/01-valuation.md 第六节"
+)
 
 STALE_MONTHS = 12        # 锚点超过这个月数就该重算
 
@@ -258,10 +321,10 @@ def method_hint(method, pe):
     """方法可能配错的提醒。"""
     if method == "yield" and pe is not None and pe > 25:
         return ("[!] PE %s 偏高。若该指数是高速成长(创业板/中证500/纳指)或强周期(证券/能源/钢铁),"
-                " 盈利收益率法本就不适用(书里表 4.2), 请改用 --method bog 或 pb 并给 --percentile。"
-                % fmt(pe, 2))
+                " 盈利收益率法本就不适用(书里表 4.2), 请改用 --type grow 或 --type cycle"
+                " 并给 --percentile。" % fmt(pe, 2))
     if method in ("bog", "pb") and pe is not None and pe < 12:
-        return ("[!] PE %s 很低, 该品种更像'盈利稳定的价值指数', 用 --method yield 更合适。"
+        return ("[!] PE %s 很低, 该品种更像'盈利稳定的价值指数', 用 --type value 更合适。"
                 % fmt(pe, 2))
     return None
 
@@ -270,7 +333,7 @@ def method_hint(method, pe):
 
 def cmd_signal(a):
     buy, sell, label, as_of = anchors_for(a)
-    method = a.method
+    method, method_explicit, type_note = resolve_method(a)
 
     discount, disc_note = a.discount, None
     if not a.hk_exact and (a.payout is not None or a.tax is not None):
@@ -318,6 +381,8 @@ def cmd_signal(a):
     d = {
         "method": method,
         "method_label": METHOD_LABEL[method],
+        "method_explicit": method_explicit,
+        "type_note": type_note,
         "pe": a.pe,
         "pb": a.pb,
         "pe_type": a.pe_type or "未注明",
@@ -344,6 +409,11 @@ def cmd_signal(a):
         print(json.dumps(d, ensure_ascii=False, indent=2))
         return
 
+    if not method_explicit:
+        print(TYPE_CHECK_HINT)
+        print()
+    if type_note:
+        print("品种类型           : %s   (%s)" % (TYPE_LABEL[normalize_type(a.type)], type_note))
     print("品种方法           : %s" % METHOD_LABEL[method])
     if a.pe is not None:
         print("市盈率 PE          : %s   (口径: %s)" % (fmt(a.pe, 3), a.pe_type or "未注明"))
@@ -385,7 +455,7 @@ def cmd_signal(a):
         print("[!] 卖出线 %s%% 隐含 PE > %s 倍, 高于 A 股历史上绝大多数指数的高点。"
               % (fmt(sell, 1), fmt(100.0 / sell, 0)))
         print("    低利率把卖出线压到很低, 结果是本方法在当前环境几乎永远发不出'卖出'信号。")
-        print("    不要把它理解为'可以一直不卖': 卖出判断请用 --method bog --percentile <分位>,")
+        print("    不要把它理解为'可以一直不卖': 卖出判断请用 --type grow --percentile <分位>,")
         print("    或给 --sell-line 自定义。")
 
     if alt:
@@ -466,7 +536,7 @@ def cmd_calibrate(a):
               % (fmt(100.0 / buy, 1), fmt(sell_pe, 0)))
         print("  PE > %s 在 A 股历史上只出现在极少数泡沫时刻, 等于这套规则在低利率下'永不卖出'。"
               % fmt(sell_pe, 0))
-        print("  结论: 卖出必须换判据 —— 用分位法 --method bog/pb --percentile(>%s 分批卖出),"
+        print("  结论: 卖出必须换判据 —— 用分位法 --type grow/cycle --percentile(>%s 分批卖出),"
               % fmt(ZONE_SELL_PCT, 0))
         print("        或把卖出线改成'债基收益 + 2~3pct 风险补偿'(见下方变体 B)。")
     print()
@@ -689,8 +759,10 @@ def cmd_position(a):
 
 
 def parse_candidates(spec):
-    """候选格式: 代码:数值[:折价系数[:方法[:分位]]], 逗号分隔。
-    数值对 yield/bog 是 PE, 对 pb 是 PB, 对 skip 可省略。"""
+    """候选格式: 代码:数值[:折价系数[:方法或类型[:分位]]], 逗号分隔。
+    数值对 yield/bog 是 PE, 对 pb 是 PB, 对 skip 可省略。
+    第 4 段既能写方法(yield/bog/pb/skip), 也能写类型(value/grow/cycle/distress, 含中文),
+    写类型时自动映射, 例如 399006:31.9:1:grow:18.2。"""
     out = []
     for part in spec.split(","):
         part = part.strip()
@@ -698,11 +770,16 @@ def parse_candidates(spec):
             continue
         bits = [b.strip() for b in part.split(":")]
         if len(bits) < 1 or not bits[0]:
-            raise SystemExit("候选格式应为 代码:数值[:折价[:方法[:分位]]], 例如 000922:9.01:1:yield")
+            raise SystemExit("候选格式应为 代码:数值[:折价[:方法或类型[:分位]]], "
+                             "例如 000922:9.01:1:yield 或 399006:31.9:1:grow:18.2")
         code = bits[0]
         method = bits[3] if len(bits) > 3 and bits[3] else "yield"
+        tkey = normalize_type(method)
+        if tkey is not None:
+            method = TYPE_METHOD[tkey]
         if method not in METHODS:
-            raise SystemExit("候选 %s 的方法 %s 无效, 只能是 %s" % (code, method, "/".join(METHODS)))
+            raise SystemExit("候选 %s 的方法/类型 %s 无效, 方法只能是 %s, 类型只能是 %s"
+                             % (code, bits[3], "/".join(METHODS), "/".join(TYPE_METHOD)))
         val = None
         if len(bits) > 1 and bits[1]:
             try:
@@ -914,19 +991,31 @@ def cmd_portfolio(a):
     for it in items:
         it["w"] = 1.0 / len(items)
     if a.weight == "depth":
+        # 归一化"低估深度": 不同方法的深度单位不同(盈利收益率的百分点 vs 分位百分点),
+        # 直接相加会让分位法的品种系统性压过盈利率法的品种。所以各自归一:
+        #   yield: (盈利收益率 - 买入线) / 买入线        -> 买入线处为 0, 达到买入线两倍时为 1
+        #   分位 : (买入分位 - 当前分位) / 买入分位        -> 买入分位处为 0, 分位 0 时为 1
+        # 两者都表示"深入便宜区多少", 量纲一致(0~1), 才敢放在一起比较。
         depths = []
+        mixed = False
         for it in items:
             c = it["c"]
             if c["method"] == "yield" and c["earnings_yield"] is not None:
-                depths.append(max(c["earnings_yield"] - buy, 1e-9))
+                base = buy if buy and buy > 0 else 1.0
+                depths.append(max((c["earnings_yield"] - buy) / base, 1e-9))
             elif c["percentile"] is not None:
+                mixed = True
                 bp = ZONE_BUY_PCT if a.buy_pct is None else a.buy_pct
-                depths.append(max(bp - c["percentile"], 1e-9))
+                base = bp if bp > 0 else 1.0
+                depths.append(max((bp - c["percentile"]) / base, 1e-9))
             else:
                 depths.append(1e-9)
         tot = sum(depths)
         for it, dv in zip(items, depths):
             it["w"] = dv / tot
+        if mixed and len(items) > 1:
+            note.append("深度已按各自方法的门槛归一(盈利率按买入线的倍数, 分位按买入分位的比例), "
+                        "否则分位法的品种会系统性压过盈利率法的品种。")
 
     items, cap_notes, cap_infeasible = _cap_weights(items, a.max_single, groups, a.max_group)
     note.extend(cap_notes)
@@ -1196,8 +1285,11 @@ def build_parser():
                         help="分位法卖出分界, 默认 %s(%s)" % (ZONE_SELL_PCT, ZONE_SOURCE))
 
     s = sub.add_parser("signal", help="买卖信号(三种方法各管一类指数)")
-    s.add_argument("--method", choices=list(METHODS), default="yield",
-                   help="yield=盈利稳定的价值指数(默认) bog=高速成长指数 pb=周期指数 skip=放弃")
+    s.add_argument("--type", dest="type", default=None,
+                   help="品种类型(推荐这样用): value/价值=盈利稳定, grow/成长=高速成长, "
+                        "cycle/周期=强周期, distress/困境=长期亏损放弃。会自动选方法")
+    s.add_argument("--method", choices=list(METHODS), default=None,
+                   help="底层覆盖: yield / bog / pb / skip。一般改用它上面的 --type")
     s.add_argument("--pe", type=float, help="当前市盈率 PE(yield / bog 用)")
     s.add_argument("--pe-type", choices=["lyr", "ttm", "dynamic"],
                    help="PE 口径: lyr=静态 ttm=滚动 dynamic=动态。强烈建议总是填写")
@@ -1314,9 +1406,10 @@ def main(argv=None):
         p.print_help()
         return 1
     if getattr(a, "cmd", None) == "signal":
-        if a.method in ("yield", "bog") and a.pe is None:
-            raise SystemExit("method=%s 需要 --pe" % a.method)
-        if a.method == "pb" and a.pb is None:
+        m, _explicit, _note = resolve_method(a)
+        if m in ("yield", "bog") and a.pe is None:
+            raise SystemExit("method=%s 需要 --pe" % m)
+        if m == "pb" and a.pb is None:
             raise SystemExit("method=pb 需要 --pb")
     try:
         a.func(a)
